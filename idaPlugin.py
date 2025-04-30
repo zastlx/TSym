@@ -355,7 +355,7 @@ def import_structs(mainDir: str):
             for undefined_type, uint_type in undefined_to_uint.items():
                 data = re.sub(re.escape(undefined_type + " "), uint_type + " ", data)
             data = re.sub(r'undefined[0-9]*', "uint64_t", data)
-    
+
             data = re.sub(r'dword', "uint32_t", data) # ida doesnt support dword in structs
             
             data = parse_helper(data)
@@ -373,7 +373,6 @@ def import_structs(mainDir: str):
             
             idaapi.parse_decls(None, data, None, idaapi.PT_SIL)
             
-
     files = readDirRecusrive(mainDir)
     
     # avoid circular dependencies by pre-defining all structs and unions as empty
@@ -400,7 +399,7 @@ def import_structs(mainDir: str):
 #endregion
 
 class TSymPluginMod(ida_idaapi.plugmod_t):
-    def run(self, arg):
+    def run(self, _):
         option = ida_kernwin.ask_buttons("Export symbols", "Import symbols", "Cancel", 1, "Do you want to export or import TSym symbols?")
         if option == 1:
             self.export_symbols()
@@ -416,7 +415,6 @@ class TSymPluginMod(ida_idaapi.plugmod_t):
 
     # TODO: add comments and labels, should we select each file individually? or just the directory?
     def import_symbols(self):
-        print("Importing TSym symbols...")
         ida_kernwin.info("Select the symbols.txt file")
         file = ida_kernwin.ask_file(0, "*.txt", "Select TSym symbols.txt file")
         if file:
