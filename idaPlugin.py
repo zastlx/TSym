@@ -176,6 +176,8 @@ def parse_comments(data: str):
             )
         )
     return
+
+ # TODO: add parsing for labels and types
 #endregion utils
 
 def rename_func_var(func: idaapi.cfuncptr_t, offset: int, name: str):
