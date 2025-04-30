@@ -246,8 +246,6 @@ def parse_helper(data: str, isName: bool = False) -> str:
     data = re.sub(r'}', '};', data)
         
     return data
- # TODO: add parsing for labels and types
-#endregion utils
 
 def rename_func_var(func: idaapi.cfuncptr_t, offset: int, name: str):
     args = func.get_lvars()
@@ -256,6 +254,163 @@ def rename_func_var(func: idaapi.cfuncptr_t, offset: int, name: str):
         return
     
     ida_hexrays.rename_lvar(func.entry_ea, args[offset].name, name)
+
+def readDirRecusrive(dir: str):
+    out = []
+    for files in os.listdir(dir):
+        if os.path.isdir(os.path.join(dir, files)):
+            out += readDirRecusrive(os.path.join(dir, files))
+        else:
+            if files.endswith(".h"):
+                out.append(os.path.join(dir, files).replace("\\", "/"))
+    return out
+
+@dataclass
+class Struct:
+    type: str
+    data: str
+
+def getStructNames(data: str) -> List[Struct]:
+    out: List[Struct] = []
+    structNames = re.findall(r'struct (.+) {', data)
+    unionNames = re.findall(r'union (.+) {', data)
+    enumNames = re.findall(r'enum (.+) {', data)
+    typeDefs = re.findall(r'typedef (\w+) ', data)
+    
+    if structNames:
+        for structName in structNames:
+            out.append(Struct(type="struct", data=parse_helper(structName, True)))
+    if unionNames:
+        for unionName in unionNames:
+            out.append(Struct(type="union", data=parse_helper(unionName, True)))
+    if enumNames:
+        for enumName in enumNames:
+            out.append(Struct(type="enum", data=parse_helper(enumName, True)))
+    if typeDefs:
+        for typedefName in typeDefs:
+            out.append(Struct(type="typedef", data=parse_helper(typedefName, True)))
+    
+
+    return out
+ # TODO: add parsing for labels and types
+#endregion utils
+
+#region import/export functions
+def import_symbols(file: str):
+    print(f"Importing symbols from {file}...")
+    with open(file, "r") as f:
+        data = f.read()
+        symbols = parse_symbols(data)
+        for symbol in symbols:
+            if symbol.name.startswith("FUN_") or symbol.name.startswith("thunk_FUN_") or symbol.name.startswith("sub_"):
+                continue
+
+            badChars = ["~", "`", ",", "<", ">", "'", "\"", "*", "=", "!", "^"]
+            name = symbol.name
+            namespaces = "::".join([ns for ns in symbol.namespaces if ns != "Global"])
+
+            for badChar in badChars:
+                namespaces = namespaces.replace(badChar, "_")
+                name = name.replace(badChar, "_")
+
+            if namespaces:
+                print(f"Importing symbol: {namespaces}::{name} at address {hex(symbol.address)}")
+                idc.set_name(symbol.address, f"{namespaces}::{name}", ida_name.SN_FORCE)
+            else:
+                print(f"Importing symbol: {name} at address {hex(symbol.address)}")
+                idc.set_name(symbol.address, name, ida_name.SN_FORCE)
+            
+            for i, arg in enumerate(symbol.args):
+                defaultNamesStart = ["arg", "var", "unk", "dword", "byte"]
+                if any(arg.name.startswith(default) for default in defaultNamesStart):
+                    continue
+
+                cfunc = idaapi.decompile(symbol.address)
+                if cfunc == None:
+                    print(f"Failed to decompile function at {hex(symbol.address)}")
+                    continue
+
+                rename_func_var(cfunc, i, arg.name)
+
+def import_structs(mainDir: str):
+    print(f"Importing structs from {mainDir}...")
+    parsed = []
+    # caused by https://github.com/DexrnZacAttack/TSym/issues/1
+    ignore = ["char[0].h", "char[1].h", "char[2].h", "uchar[8].h", "uchar[1].h", "wchar_t[8].h", "wchar_t[0].h", "ulonglong[2].h", "ulonglong[1].h", "undefined[1].h", "undefined[2].h", "undefined[4].h", "undefined[8].h", "undefined[16].h", "undefined.h", "wchar_t.h", "char.h", "uchar.h", "byte.h", "word.h", "dword.h", "qword.h", "uint8_t.h", "uint16_t.h", "uint32_t.h", "uint64_t.h", "int8_t.h", "int16_t.h", "int32_t.h", "int64_t.h", "ulong.h", "long.h", "ushort.h", "short.h", "uint.h", "int.h", "bool.h", "float.h", "double.h", "uint32.h"] 
+    # ghidra uses this when it doesn't know the type
+    undefined_to_uint = {
+        "undefined": "uint8_t",
+        "undefined1": "uint8_t",
+        "undefined2": "uint16_t",
+        "undefined3": "uint32_t",
+        "undefined4": "uint32_t",
+        "undefined5": "uint64_t",
+        "undefined6": "uint64_t",
+        "undefined7": "uint64_t",
+        "undefined8": "uint64_t",
+    }
+
+    def parse_type(dir: str):
+        if any(dir.lower().endswith(ign) for ign in ignore) or "Other" in dir:
+            return
+        dir = re.sub(r'\[.*?\]', '', dir) # "Other/std/shared_ptr%3CMultiplayerLocalPlayer%3E[4].h" -> "Other/std/shared_ptr%3CMultiplayerLocalPlayer%3E.h"
+        dir = re.sub(r'%3A%3A', "/", dir) # fixes a few import strings
+
+        if dir in parsed or  "/functions/" in dir or any(dir.endswith(ign) for ign in ignore):
+            return
+        
+        parsed.append(dir)
+    
+        with open(dir, "r") as f:
+            data = f.read()
+
+            for undefined_type, uint_type in undefined_to_uint.items():
+                data = re.sub(re.escape(undefined_type + " "), uint_type + " ", data)
+            data = re.sub(r'undefined[0-9]*', "uint64_t", data)
+    
+            data = re.sub(r'dword', "uint32_t", data) # ida doesnt support dword in structs
+            
+            data = parse_helper(data)
+
+            imports = [] 
+            for line in data.splitlines():
+                if line.startswith("#include"):
+                    # match inside quotes aka imported file
+                    imports.append(mainDir + "/" + re.search(r'\"(.+)\"', line).group(1))
+                    data = re.sub(r'#include \"(.+)\"', "", data)
+                
+            if len(imports) > 0:
+                for imported in imports:
+                    parse_type(imported)
+            
+            idaapi.parse_decls(None, data, None, idaapi.PT_SIL)
+            
+
+    files = readDirRecusrive(mainDir)
+    
+    # avoid circular dependencies by pre-defining all structs and unions as empty
+    deps = []
+    for file in files:
+        if "Other" in file and not "std" in file: # a lot of wack unneeded stuff in Other that would of required a lot of work to parse, all of the actual important types are included
+            continue
+
+        with open(file, "r") as f:
+            deps += getStructNames(f.read())
+    
+    depStr = ""
+    for dep in deps:
+        if dep.type == "typedef":
+            depStr += f"typedef {dep.data};\n"
+            continue
+
+        depStr += f"{dep.type} {dep.data} {{}};\n"
+
+    idaapi.parse_decls(None, depStr, None, idaapi.PT_SIL)
+
+    for file in files:
+        parse_type(file)
+
+#endregion import functions
 
 class TSymPluginMod(ida_idaapi.plugmod_t):
     def run(self, arg):
@@ -275,172 +430,24 @@ class TSymPluginMod(ida_idaapi.plugmod_t):
     def import_symbols(self):
         print("Importing TSym symbols...")
         # TODO: add comments, labels and types support, should we select each file individually? or just the directory?
-        #region parse symbols
+        ida_kernwin.info("Select the symbols.txt file")
         file = ida_kernwin.ask_file(0, "*.txt", "Select TSym symbols.txt file")
         if file:
-            print(f"Importing symbols from {file}...")
-            with open(file, "r") as f:
-                data = f.read()
-                symbols = parse_symbols(data)
-                for symbol in symbols:
-                    if symbol.name.startswith("FUN_") or symbol.name.startswith("thunk_FUN_") or symbol.name.startswith("sub_"):
-                        continue
-
-                    badChars = ["~", "`", ",", "<", ">", "'", "\"", "*", "=", "!", "^"]
-                    name = symbol.name
-                    namespaces = "::".join([ns for ns in symbol.namespaces if ns != "Global"])
-
-                    for badChar in badChars:
-                        namespaces = namespaces.replace(badChar, "_")
-                        name = name.replace(badChar, "_")
-
-                    if namespaces:
-                        print(f"Importing symbol: {namespaces}::{name} at address {hex(symbol.address)}")
-                        idc.set_name(symbol.address, f"{namespaces}::{name}", ida_name.SN_FORCE)
-                    else:
-                        print(f"Importing symbol: {name} at address {hex(symbol.address)}")
-                        idc.set_name(symbol.address, name, ida_name.SN_FORCE)
-                    
-                    for i, arg in enumerate(symbol.args):
-                        defaultNamesStart = ["arg", "var", "unk", "dword", "byte"]
-                        if any(arg.name.startswith(default) for default in defaultNamesStart):
-                            continue
-
-                        cfunc = idaapi.decompile(symbol.address)
-                        if cfunc == None:
-                            print(f"Failed to decompile function at {hex(symbol.address)}")
-                            continue
-
-                        rename_func_var(cfunc, i, arg.name)
-        #endregion parse symbols  
+            import_symbols(file)
+        else:
+            ida_kernwin.msg("No file selected")
 
         #region parse types (structs, enums, etc)
-        def readDirRecusrive(dir: str):
-            out = []
-            for files in os.listdir(dir):
-                if os.path.isdir(os.path.join(dir, files)):
-                    out += readDirRecusrive(os.path.join(dir, files))
-                else:
-                    if files.endswith(".h"):
-                        out.append(os.path.join(dir, files).replace("\\", "/"))
-            return out
         
-        @dataclass
-        class Struct:
-            type: str
-            data: str
-
-        def getStructNames(data: str) -> List[Struct]:
-            out: List[Struct] = []
-            structNames = re.findall(r'struct (.+) {', data)
-            unionNames = re.findall(r'union (.+) {', data)
-            enumNames = re.findall(r'enum (.+) {', data)
-            typeDefs = re.findall(r'typedef (\w+) ', data)
             
-            if structNames:
-                for structName in structNames:
-                    out.append(Struct(type="struct", data=parse_helper(structName, True)))
-            if unionNames:
-                for unionName in unionNames:
-                    out.append(Struct(type="union", data=parse_helper(unionName, True)))
-            if enumNames:
-                for enumName in enumNames:
-                    out.append(Struct(type="enum", data=parse_helper(enumName, True)))
-            if typeDefs:
-                for typedefName in typeDefs:
-                    out.append(Struct(type="typedef", data=parse_helper(typedefName, True)))
-            
-
-            return out
-            
-        
+        ida_kernwin.info("Select folder the folder containing the types (.h files)")
         mainDir = self.ask_directory("Select folder to import types")
-        if not mainDir:
-            print("No directory selected")
-            return
+        if mainDir:
+            import_structs(mainDir)
+        else:
+            ida_kernwin.msg("No folder selected")
     
-        parsed = []
-        # caused by https://github.com/DexrnZacAttack/TSym/issues/1
-        ignore = ["char[0].h", "char[1].h", "char[2].h", "uchar[8].h", "uchar[1].h", "wchar_t[8].h", "wchar_t[0].h", "ulonglong[2].h", "ulonglong[1].h", "undefined[1].h", "undefined[2].h", "undefined[4].h", "undefined[8].h", "undefined[16].h", "undefined.h", "wchar_t.h", "char.h", "uchar.h", "byte.h", "word.h", "dword.h", "qword.h", "uint8_t.h", "uint16_t.h", "uint32_t.h", "uint64_t.h", "int8_t.h", "int16_t.h", "int32_t.h", "int64_t.h", "ulong.h", "long.h", "ushort.h", "short.h", "uint.h", "int.h", "bool.h", "float.h", "double.h", "uint32.h"] 
-        # ghidra uses this when it doesn't know the type
-        undefined_to_uint = {
-            "undefined": "uint8_t",
-            "undefined1": "uint8_t",
-            "undefined2": "uint16_t",
-            "undefined3": "uint32_t",
-            "undefined4": "uint32_t",
-            "undefined5": "uint64_t",
-            "undefined6": "uint64_t",
-            "undefined7": "uint64_t",
-            "undefined8": "uint64_t",
-        }
-
-        def parse_type(dir: str):
-            if any(dir.lower().endswith(ign) for ign in ignore) or "Other" in dir:
-                return
-            dir = re.sub(r'\[.*?\]', '', dir) # "Other/std/shared_ptr%3CMultiplayerLocalPlayer%3E[4].h" -> "Other/std/shared_ptr%3CMultiplayerLocalPlayer%3E.h"
-            dir = re.sub(r'%3A%3A', "/", dir) # fixes a few import strings
-
-            if dir in parsed or  "/functions/" in dir or any(dir.endswith(ign) for ign in ignore):
-                return
-            
-            parsed.append(dir)
-        
-            with open(dir, "r") as f:
-                data = f.read()
-
-                for undefined_type, uint_type in undefined_to_uint.items():
-                    data = re.sub(re.escape(undefined_type + " "), uint_type + " ", data)
-                data = re.sub(r'undefined[0-9]*', "uint64_t", data)
-        
-                data = re.sub(r'dword', "uint32_t", data) # ida doesnt support dword in structs
-                
-                data = parse_helper(data)
-
-                imports = [] 
-                for line in data.splitlines():
-                    if line.startswith("#include"):
-                        # match inside quotes aka imported file
-                        imports.append(mainDir + "/" + re.search(r'\"(.+)\"', line).group(1))
-                        data = re.sub(r'#include \"(.+)\"', "", data)
-                    
-                if len(imports) > 0:
-                    for imported in imports:
-                        parse_type(imported)
-                
-                errors = idaapi.parse_decls(None, data, None, idaapi.PT_SIL)
-                with open(dir + ".out", "w") as f:
-                    f.write(data)
-                print(f"Errors: {errors} in {dir}")
-                
-
-        files = readDirRecusrive(mainDir)
-        
-        # avoid circular dependencies by pre-defining all structs and unions as empty
-        deps = []
-        for file in files:
-            if "Other" in file and not "std" in file: # a lot of wack unneeded stuff in Other that would of required a lot of work to parse, all of the actual important types are included
-                continue
-
-            with open(file, "r") as f:
-                deps += getStructNames(f.read())
-        
-        depStr = ""
-        for dep in deps:
-            if dep.type == "typedef":
-                depStr += f"typedef {dep.data};\n"
-                continue
-
-            depStr += f"{dep.type} {dep.data} {{}};\n"
-
-        with open(os.path.join(mainDir, "dep.txt"), "w") as f:
-            print (f"Writing to {os.path.join(mainDir, 'dep.txt')}")
-            f.write(depStr)
-
-        idaapi.parse_decls(None, depStr, None, idaapi.PT_SIL)
-
-        for file in files:
-            parse_type(file)
+       
                 
 
     # ida has a method for asking for a file, but not for a directory ??
