@@ -1,5 +1,15 @@
 #region imports
+import idc
+import idaapi
 import ida_idaapi
+import ida_hexrays
+import ida_name
+import ida_kernwin
+from enum import Enum
+from dataclasses import dataclass
+from typing import List
+from tkinter import Tk
+from tkinter.filedialog import askdirectory
 #endregion imports
 
 # these can probably be put in a common file
@@ -166,14 +176,78 @@ def parse_comments(data: str):
             )
         )
     return
-
-# TODO: add parsing for labels and types
 #endregion utils
 
+def rename_func_var(func: idaapi.cfuncptr_t, offset: int, name: str):
+    args = func.get_lvars()
+    if offset >= len(args):
+        print(f"Offset {offset} is out of range for function {func.entry_ea}")
+        return
+    
+    ida_hexrays.rename_lvar(func.entry_ea, args[offset].name, name)
 
 class TSymPluginMod(ida_idaapi.plugmod_t):
     def run(self, arg):
-        print("Running TSym plugin with argument:", arg)
+        option = ida_kernwin.ask_buttons("Export symbols", "Import symbols", "Cancel", 1, "Do you want to export or import TSym symbols?")
+        if option == 1:
+            self.export_symbols()
+        elif option == 0:
+            self.import_symbols()
+
+    def export_symbols(self):
+        print("Exporting TSym symbols...")
+        directory = self.ask_directory("Select folder to export symbols")
+        if directory:
+            print(f"Exporting symbols to {directory}...")
+            # TODO: implement export logic
+
+    def import_symbols(self):
+        print("Importing TSym symbols...")
+        # TODO: add comments, labels and types support, should we select each file individually? or just the directory?
+        file = ida_kernwin.ask_file(0, "*.txt", "Select TSym symbols.txt file")
+        if file:
+            print(f"Importing symbols from {file}...")
+            with open(file, "r") as f:
+                data = f.read()
+                #region parse symbols
+                symbols = parse_symbols(data)
+                for symbol in symbols:
+                    if symbol.name.startswith("FUN_") or symbol.name.startswith("thunk_FUN_") or symbol.name.startswith("sub_"):
+                        continue
+
+                    badChars = ["~", "`", ",", "<", ">", "'", "\"", "*", "=", "!", "^"]
+                    name = symbol.name
+                    namespaces = "::".join([ns for ns in symbol.namespaces if ns != "Global"])
+
+                    for badChar in badChars:
+                        namespaces = namespaces.replace(badChar, "_")
+                        name = name.replace(badChar, "_")
+
+                    if namespaces:
+                        print(f"Importing symbol: {namespaces}::{name} at address {hex(symbol.address)}")
+                        idc.set_name(symbol.address, f"{namespaces}::{name}", ida_name.SN_FORCE)
+                    else:
+                        print(f"Importing symbol: {name} at address {hex(symbol.address)}")
+                        idc.set_name(symbol.address, name, ida_name.SN_FORCE)
+                    
+                    for i, arg in enumerate(symbol.args):
+                        defaultNamesStart = ["arg", "var", "unk", "dword", "byte"]
+                        for defaultName in defaultNamesStart:
+                            if arg.name.startswith(defaultName):
+                                continue
+
+                        cfunc = idaapi.decompile(symbol.address)
+                        rename_func_var(cfunc, i, arg.name)
+                #endregion parse symbols  
+
+    # ida has a method for asking for a file, but not for a directory ??
+    def ask_directory(self, title):
+        root = Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        directory = askdirectory(title=title)
+        root.destroy()
+        return directory
 
 class TSymPlugin(ida_idaapi.plugin_t):
     flags = ida_idaapi.PLUGIN_MULTI
