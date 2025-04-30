@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from typing import List
 from tkinter import Tk
 from tkinter.filedialog import askdirectory
-#endregion imports
+#endregion
 
 # these can probably be put in a common file
-#region utils
+#region TSym parsing utils
 class CallingConvention(Enum):
     CDECL     = "__cdecl"
     STDCALL   = "__stdcall"
@@ -179,6 +179,10 @@ def parse_comments(data: str):
         )
     return comments
 
+ # TODO: add parsing for labels
+#endregion
+
+#region utils
 # i'm so sorry for this function
 def parse_helper(data: str, isName: bool = False) -> str:
     # remove comments
@@ -292,8 +296,7 @@ def getStructNames(data: str) -> List[Struct]:
     
 
     return out
- # TODO: add parsing for labels and types
-#endregion utils
+#endregion
 
 #region import/export functions
 def import_symbols(file: str):
@@ -409,8 +412,7 @@ def import_structs(mainDir: str):
 
     for file in files:
         parse_type(file)
-
-#endregion import functions
+#endregion
 
 class TSymPluginMod(ida_idaapi.plugmod_t):
     def run(self, arg):
@@ -427,18 +429,15 @@ class TSymPluginMod(ida_idaapi.plugmod_t):
             print(f"Exporting symbols to {directory}...")
             # TODO: implement export logic
 
+    # TODO: add comments and labels, should we select each file individually? or just the directory?
     def import_symbols(self):
         print("Importing TSym symbols...")
-        # TODO: add comments, labels and types support, should we select each file individually? or just the directory?
         ida_kernwin.info("Select the symbols.txt file")
         file = ida_kernwin.ask_file(0, "*.txt", "Select TSym symbols.txt file")
         if file:
             import_symbols(file)
         else:
             ida_kernwin.msg("No file selected")
-
-        #region parse types (structs, enums, etc)
-        
             
         ida_kernwin.info("Select folder the folder containing the types (.h files)")
         mainDir = self.ask_directory("Select folder to import types")
@@ -447,9 +446,6 @@ class TSymPluginMod(ida_idaapi.plugmod_t):
         else:
             ida_kernwin.msg("No folder selected")
     
-       
-                
-
     # ida has a method for asking for a file, but not for a directory ??
     def ask_directory(self, title: str):
         root = Tk()
