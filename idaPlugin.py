@@ -183,72 +183,57 @@ def parse_comments(data: str):
 #endregion
 
 #region utils
-# i'm so sorry for this function
 def parse_helper(data: str, isName: bool = False) -> str:
-    # remove comments
-    data = re.sub(r'//.*', '', data)
-    data = re.sub(r'/\*.*?\*/', '', data, flags=re.DOTALL)
-
-    # access modifiers
-    data = re.sub(r'public', '', data)
-    data = re.sub(r'private', '', data)
-    data = re.sub(r'protected', '', data)
-
-    # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/FUI/RenderNode/fuiRenderNodeEditText.h#L2
-    data = re.sub(r':\s+(public)?uint8_t (\*(\s+))+', "", data)
-    # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Enums/C4JStorage/ESaveIncompleteType.h#L1
-    data = re.sub(r':\s+(public)?uint63_t ', "", data)
-
-    data = re.sub(r'::', '__', data)
-
-    # "int *64 entry" to "int entry" to adhere with c style syntax
-    data = re.sub(r' \*[0-9]+ ', ' ', data)
-
-    # adhere to c syntax
-    data = re.sub(r'ulonglong', "unsigned long long", data)
-    data = re.sub(r'longlong', "long long", data)
-
-    # not 100% sure what the "pointer" type is in ghidra
-    data = re.sub(r'pointer[0-9]*', 'uint64_t', data)
-    data = re.sub(r'pointer', 'uint64_t', data)
-
-    # ida doesnt like <>. any other ideas for this?
-    data = re.sub(r'[<>]', '__', data)
-
-    # "wchar_t[8] name" to "wchar_t name[8]" to adhere with c style syntax
-    data = re.sub(r'\b(?P<base>[\w:<>]+)\s*\[(?P<size>\d+)\]\s*(?P<name>\w+)\b', r'\g<base> \g<name>[\g<size>]', data)
-
-    if isName:
-        data = re.sub(r'struct', '_struct', data)
-        data = re.sub(r'union', '_union', data)
-        data = re.sub(r'enum', '_enum', data)
-        data = re.sub(r':.+', '', data) # remove inheritance, will be added when we properly parse the types
-        data = re.sub(r'\*', '', data)
-        data = re.sub(r',', '_', data)
-    
-    data = re.sub(r'\(', '_', data)
-    data = re.sub(r'\)', '_', data)
-    # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/IdMapper%253Cclass_Item%252A___ptr64%253E.h#L1
-    data = re.sub(r'Item\*', "Item_", data)
-    # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/TypedBoxed/TypedBoxed%253Cclass_PlanksBlock/Variant%252A___ptr64%253E.h#L2
-    data = re.sub(r'Variant\*', "Variant_", data)
-    # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/struct.h#L1
-    data = re.sub(r'struct struct', "struct _struct", data)
-    # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Enums/enum.h#L1
-    data = re.sub(r'enum enum', "enum _enum", data)
-
+    regex_rules = [
+        (r'//.*', ''), # single line comments
+        (r'/\*.*?\*/', '', re.DOTALL), # multi line comments
+        (r'public', ''), # access modifiers
+        (r'protected', ''),
+        (r'private', ''),
+        (r':\s+(public)?uint8_t (\*(\s+))+', ""), # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/FUI/RenderNode/fuiRenderNodeEditText.h#L2
+        (r':\s+(public)?uint63_t ', ""), # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Enums/C4JStorage/ESaveIncompleteType.h#L1
+        (r'::', '__'), # replace :: with __
+        (r' \*[0-9]+ ', ' '), # "int *64 entry" to "int entry" to adhere with c style syntax
+        (r'ulonglong', "unsigned long long"), # adhere to c syntax
+        (r'longlong', "long long"),
+        (r'pointer[0-9]*', 'uint64_t'), # not 100% sure what the "pointer" type is in ghidra
+        (r'pointer', 'uint64_t'),
+        (r'[<>]', '__'), # ida doesnt like <>. any other ideas for this?
+        (r'\b(?P<base>[\w:<>]+)\s*\[(?P<size>\d+)\]\s*(?P<name>\w+)\b', r'\g<base> \g<name>[\g<size>]'), # "wchar_t[8] name" to "wchar_t name[8]" to adhere with c style syntax
+        (r'\(', '_'),
+        (r'\)', '_'),
+        (r'Item\*', "Item_"), # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/IdMapper%253Cclass_Item%252A___ptr64%253E.h#L1
+        (r'Variant\*', "Variant_"), # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/TypedBoxed/TypedBoxed%253Cclass_PlanksBlock/Variant%252A___ptr64%253E.h#L2
+        (r'struct struct', "struct _struct"), # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/struct.h#L1
+        (r'enum enum', "enum _enum"), # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Enums/enum.h#L1
+        (r'namespace', '_namespace'), # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/ResourceLocation.h#L12
+        (r'}', '};'), # colons at the end of defs
+    ]
+    name_only_rules = [
+        (r'struct', '_struct'),
+        (r'union', '_union'),
+        (r'enum', '_enum'),
+        (r':.+', ''), # remove inheritance, will be added when we properly parse the types
+        (r'\*', ''),
+        (r',', '_'),
+    ]
     badChars = ["~", "`", "!", "^"]
+
+    for pattern, repl, *f in regex_rules:
+        flags = f[0] if f else 0
+        data = re.sub(pattern, repl, data, flags=flags)
+    
+    if isName:
+        for pattern, repl, *f in name_only_rules:
+            flags = f[0] if f else 0
+            data = re.sub(pattern, repl, data, flags=flags)
+    
     for badChar in badChars:
         data = data.replace(badChar, "")
 
     if "enum" in data:
-        data = re.sub(r';', ',', data)
-        
-    # https://github.com/DexrnZacAttack/MCXB1-Syms/blob/a4d1aa8a9d8b0a062cda36ef95c0424bec1360c5/types/Minecraft/Classes/ResourceLocation.h#L12
-    data = re.sub(r'namespace', '_namespace', data)
-    # colons at the end of defs
-    data = re.sub(r'}', '};', data)
-        
+        data = re.sub(r'(?<!\});', ',', data)
+    
     return data
 
 def rename_func_var(func: idaapi.cfuncptr_t, offset: int, name: str):
