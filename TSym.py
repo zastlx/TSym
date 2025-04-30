@@ -121,7 +121,7 @@ comments.write(''.join(comment_builder))
 #region function writer
 # function symbols
 print("Writing functions")
-# address;callconv;nmsp_size;[namespace];name;args_size;[args];hasVarArgs;
+# address;returnVal;callconv;nmsp_size;[namespace];name;args_size;[args];hasVarArgs;
 for func in fun_manager.getFunctions(False):  # type: ghidra.program.model.listing.Function
     # closest thing to StringBuilder
     builder = []
